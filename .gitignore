@@ -1,0 +1,16 @@
+# Environment variables — never commit real credentials
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Execution reports
+*.json
+
+# Test and learn directories
+test/
+learn/
