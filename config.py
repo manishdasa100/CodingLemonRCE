@@ -36,17 +36,26 @@ class ExecutionConfig:
 
 
 @dataclass
+class RedisConfig:
+    """Settings for ElastiCache Redis — used to publish execution reports."""
+    host: str = ""
+    port: int = 6379
+    report_ttl: int = 300    # Seconds to keep report in Redis (5 min is plenty for polling)
+
+
+@dataclass
 class WorkerConfig:
     """Top-level config that groups all sub-configs together."""
     sqs: SQSConfig = field(default_factory=SQSConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    redis: RedisConfig = field(default_factory=RedisConfig)
     max_consecutive_errors: int = 5       # Shutdown after this many back-to-back failures
 
 
 _DEFAULT_ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
-def load_config(env_file: str =".env.example") -> WorkerConfig:
+def load_config(env_file: str) -> WorkerConfig:
     """
     Build a WorkerConfig from environment variables.
 
@@ -123,6 +132,11 @@ def load_config(env_file: str =".env.example") -> WorkerConfig:
     #     config.execution.allowed_languages = [
     #         lang.strip().lower() for lang in allowed.split(",")
     #     ]
+
+    # --- Redis ---
+    config.redis.host = os.environ.get("REDIS_HOST", config.redis.host)
+    config.redis.port = int(os.environ.get("REDIS_PORT", config.redis.port))
+    config.redis.report_ttl = int(os.environ.get("REDIS_REPORT_TTL", config.redis.report_ttl))
 
     # --- Worker ---
     config.max_consecutive_errors = int(

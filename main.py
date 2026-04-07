@@ -23,7 +23,7 @@ import logging
 import os
 import sys
 
-from config import load_config
+from config import WorkerConfig, load_config
 from dispatcher import Dispatcher
 
 
@@ -49,7 +49,7 @@ def setup_logging() -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
-def validate_config(config) -> None:
+def validate_config(config: WorkerConfig) -> None:
     """
     Check that required settings are present before starting.
 
@@ -68,6 +68,9 @@ def validate_config(config) -> None:
         errors.append("NSJAIL_CONFIG_PATH is required")
     elif not os.path.isfile(config.sandbox.config_path):
         errors.append(f"NSJAIL_CONFIG_PATH does not exist: {config.sandbox.config_path}")
+
+    if not config.redis.host:
+        errors.append("REDIS HOST is required")
 
     if errors:
         for err in errors:
@@ -91,7 +94,7 @@ def main() -> None:
     setup_logging()
     logger = logging.getLogger(__name__)
 
-    env_file = f".env.{args.env}" if args.env else ".env"
+    env_file = f".env.{args.env}" if args.env else ".env.example"
     logger.info("Loading configuration from '%s'...", env_file)
     config = load_config(env_file=env_file)
 
@@ -104,6 +107,7 @@ def main() -> None:
 
     logger.info("=== CodingLemons Worker Service ===")
     logger.info("  SQS Queue:       %s", config.sqs.queue_url)
+    logger.info("  Redis host:       %s", config.redis.host)
     logger.info("  nsjail config:   %s", config.sandbox.config_path)
     logger.info("  Max concurrent:  %d", config.execution.max_concurrent)
     logger.info("  Time limit:      %ds", config.execution.default_time_limit)

@@ -16,6 +16,8 @@ import shutil
 import logging
 from typing import List
 
+import redis as redis_client
+
 from config import WorkerConfig
 from models import (
     ExecutionRequest,
@@ -36,6 +38,11 @@ class Executor:
     def __init__(self, config: WorkerConfig):
         self.config = config
         self.sandbox = NsjailSandbox(config.sandbox)
+        self.redis = redis_client.Redis(
+            host=config.redis.host,
+            port=config.redis.port,
+            decode_responses=True,
+        )
 
     async def execute(self, request: ExecutionRequest) -> ExecutionReport:
         """
@@ -82,6 +89,7 @@ class Executor:
                 )
                 report.compile_error = compile_result.error_message
                 self._save_report(report, exec_dir)
+                self._publish_to_redis(report)
                 return report
 
             # ---- Step 4: Clamp resource limits ----
@@ -109,6 +117,7 @@ class Executor:
             # ---- Step 6: Build report ----
             report = self._build_report(request, test_results)
             self._save_report(report, exec_dir)
+            self._publish_to_redis(report)
 
             logger.info(
                 "[%s] Execution complete: status=%s, passed=%d/%d",
@@ -124,7 +133,8 @@ class Executor:
                 "Internal execution error",
             )
             report.internal_error = str(e)
-            self._save_report(report, exec_dir)
+            # self._save_report(report, exec_dir)
+            self._publish_to_redis(report)
             return report
 
         finally:
@@ -417,3 +427,23 @@ class Executor:
         report_path = os.path.join(output_dir, f"{report.execution_id}.json")
         report.save_to_file(report_path)
         logger.info("[%s] Report saved to %s", report.execution_id, report_path)
+
+    def _publish_to_redis(self, report: ExecutionReport) -> None:
+        """
+        Publish the execution report to ElastiCache Redis so the backend
+        can serve it to the frontend via short polling.
+
+        Key:   report:<job_id>
+        Value: JSON string of the report
+        TTL:   report_ttl seconds (default 5 min) — auto-expires after
+               the frontend has had plenty of time to poll and retrieve it.
+        """
+        if self.redis is None:
+            logger.debug("[%s] Redis not configured — skipping publish", report.execution_id)
+            return
+        try:
+            key = f"report:{report.execution_id}"
+            self.redis.setex(key, self.config.redis.report_ttl, report.to_json())
+            logger.info("[%s] Report published to Redis (TTL=%ds)", report.execution_id, self.config.redis.report_ttl)
+        except Exception as e:
+            logger.error("[%s] Failed to publish report to Redis: %s", report.execution_id, e)
