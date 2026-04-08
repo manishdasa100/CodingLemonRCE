@@ -116,7 +116,6 @@ class Executor:
 
             # ---- Step 6: Build report ----
             report = self._build_report(request, test_results)
-            self._save_report(report, exec_dir)
             self._publish_to_redis(report)
 
             logger.info(
@@ -133,16 +132,13 @@ class Executor:
                 "Internal execution error",
             )
             report.internal_error = str(e)
-            # self._save_report(report, exec_dir)
             self._publish_to_redis(report)
             return report
 
         finally:
             # ---- Step 7: Cleanup ----
-            # We keep the exec_dir around (it has the report).
-            # Only clean up the code directory to free space.
             try:
-                shutil.rmtree(code_dir, ignore_errors=True)
+                shutil.rmtree(exec_dir, ignore_errors=True)
             except Exception:
                 pass
 

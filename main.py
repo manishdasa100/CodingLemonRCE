@@ -20,6 +20,7 @@ Environment variables (all optional with defaults):
 import argparse
 import asyncio
 import logging
+import logging.handlers
 import os
 import sys
 
@@ -31,16 +32,36 @@ def setup_logging() -> None:
     """
     Configure logging for the worker.
 
+    Logs are written to a daily rotating file and also to stdout.
     Log format: [timestamp] LEVEL module — message
     Level is controlled by LOG_LEVEL env var (default: INFO).
+    Log directory is controlled by LOG_DIR env var (default: /var/log/codinglemons).
     """
     level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    log_dir = os.environ.get("LOG_DIR", "/var/log/codinglemons")
+    os.makedirs(log_dir, exist_ok=True)
+
+    fmt = logging.Formatter(
+        fmt="[%(asctime)s] %(levelname)-7s %(name)-20s — %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Daily rotating file — rolls over at midnight, keeps 30 days of logs
+    file_handler = logging.handlers.TimedRotatingFileHandler(
+        filename=os.path.join(log_dir, "worker.log"),
+        when="midnight",
+        backupCount=10,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(fmt)
+
+    # Keep stdout as well — useful when running manually or checking systemd status
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(fmt)
 
     logging.basicConfig(
         level=getattr(logging, level, logging.INFO),
-        format="[%(asctime)s] %(levelname)-7s %(name)-20s — %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        stream=sys.stdout,
+        handlers=[file_handler, stdout_handler],
     )
 
     # Quiet down noisy libraries
