@@ -88,7 +88,6 @@ class Executor:
                     "Compilation error",
                 )
                 report.compile_error = compile_result.error_message
-                self._save_report(report, exec_dir)
                 self._publish_to_redis(report)
                 return report
 
@@ -414,15 +413,6 @@ class Executor:
             status_code=status_code,
             status_msg=status_msg,
         )
-
-    def _save_report(self, report: ExecutionReport, exec_dir: str) -> None:
-        """Save the execution report as a JSON file."""
-        output_dir = self.config.execution.output_dir or exec_dir
-        os.makedirs(output_dir, exist_ok=True)
-
-        report_path = os.path.join(output_dir, f"{report.execution_id}.json")
-        report.save_to_file(report_path)
-        logger.info("[%s] Report saved to %s", report.execution_id, report_path)
 
     def _publish_to_redis(self, report: ExecutionReport) -> None:
         """

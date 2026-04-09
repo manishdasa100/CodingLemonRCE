@@ -31,8 +31,7 @@ class ExecutionConfig:
              # Max sandboxes running in parallel
     max_output_bytes: int = 262144        # 256 KB output cap
     max_output_lines: int = 5000          # Max lines of output
-    temp_dir: str = "/tmp/codinglemon"   # Base directory for temp execution dirs
-    output_dir: str = "/tmp/codinglemon/reports"                  # Where execution reports are saved
+    temp_dir: str = "/tmp/codinglemons"   # Base directory for temp execution dirs
 
 
 @dataclass
@@ -124,9 +123,7 @@ def load_config(env_file: str) -> WorkerConfig:
     config.execution.temp_dir = os.environ.get(
         "TEMP_DIR", config.execution.temp_dir
     )
-    config.execution.output_dir = os.environ.get(
-        "OUTPUT_DIR", config.execution.output_dir
-    )
+
     # allowed = os.environ.get("ALLOWED_LANGUAGES", "")
     # if allowed:
     #     config.execution.allowed_languages = [

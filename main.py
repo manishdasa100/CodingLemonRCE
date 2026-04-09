@@ -121,10 +121,8 @@ def main() -> None:
 
     validate_config(config)
 
-    # Ensure temp and output directories exist
+    # Ensure temp directory exist
     os.makedirs(config.execution.temp_dir, exist_ok=True)
-    if config.execution.output_dir:
-        os.makedirs(config.execution.output_dir, exist_ok=True)
 
     logger.info("=== CodingLemons Worker Service ===")
     logger.info("  SQS Queue:       %s", config.sqs.queue_url)
@@ -134,7 +132,6 @@ def main() -> None:
     logger.info("  Time limit:      %ds", config.execution.default_time_limit)
     logger.info("  Memory limit:    %dMB", config.execution.default_memory_limit)
     logger.info("  Temp dir:        %s", config.execution.temp_dir)
-    logger.info("  Output dir:      %s", config.execution.output_dir or "(inside exec dir)")
     # logger.info("  Languages:       %s", ", ".join(config.execution.allowed_languages))
     logger.info("===================================")
 
