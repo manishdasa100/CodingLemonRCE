@@ -11,11 +11,14 @@ The asyncio.Semaphore ensures at most N sandboxes run concurrently.
 import asyncio
 import logging
 import signal
+import time
+
+import redis as redis_client
 
 from config import WorkerConfig
 from executor import Executor
 from poller import SQSPoller
-from models import ExecutionRequest
+from models import ExecutionRequest, ExecutionReport, MalformedMessage, StatusCode
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,11 @@ class Dispatcher:
         self.semaphore = asyncio.Semaphore(config.execution.max_concurrent)
         self._running = True
         self._active_tasks: set = set()
+        self.redis = redis_client.Redis(
+            host=config.redis.host,
+            port=config.redis.port,
+            decode_responses=True,
+        )
 
     async def start(self) -> None:
         """
@@ -64,15 +72,19 @@ class Dispatcher:
                 # This runs in a thread because boto3 is synchronous.
                 # run_in_executor() moves the blocking call to a thread pool
                 # so the event loop stays responsive.
-                requests = await asyncio.get_running_loop().run_in_executor(
+                requests, malformed = await asyncio.get_running_loop().run_in_executor(
                     None,  # Use default thread pool
                     self.poller.poll,
                 )
 
                 consecutive_errors = 0  # Reset on successful poll
 
+                # ---- Handle malformed messages ----
+                for bad in malformed:
+                    self._handle_malformed(bad)
+
                 if not requests:
-                    # No messages — loop back to poll again
+                    # No valid messages — loop back to poll again
                     continue
 
                 # ---- Spawn a task for each message ----
@@ -120,10 +132,18 @@ class Dispatcher:
             logger.info("[%s] Acquired execution slot", job_id)
 
             try:
-                await self.executor.execute(request)
+                report = await self.executor.execute(request)
 
-                # Execution succeeded — delete the message from SQS
-                # so it's not retried
+                # Publish to Redis — retries internally, raises if all attempts fail
+                await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    self.publish_to_redis,
+                    report,
+                )
+
+                # Only delete from SQS after successful publish — if publish
+                # failed, the exception above prevents reaching this line and
+                # SQS will redeliver the message after visibility_timeout
                 await asyncio.get_running_loop().run_in_executor(
                     None,
                     self.poller.delete,
@@ -132,10 +152,9 @@ class Dispatcher:
                 )
 
             except Exception as e:
-                # If execution fails, we do NOT delete the message.
-                # SQS will make it visible again after visibility_timeout
-                # and another worker (or this one) will retry.
-                logger.error("[%s] Execution failed: %s", job_id, e)
+                # Covers: execution errors, Redis publish failure, SQS delete failure.
+                # Not deleting means SQS retries the job after visibility_timeout.
+                logger.error("[%s] Failed: %s", job_id, e)
 
     def _handle_shutdown(self) -> None:
         """
@@ -153,3 +172,73 @@ class Dispatcher:
             logger.info("Waiting for %d active task(s) to finish...", len(self._active_tasks))
             await asyncio.gather(*self._active_tasks, return_exceptions=True)
             logger.info("All tasks finished")
+
+    def _handle_malformed(self, bad: MalformedMessage) -> None:
+        """
+        Mark a malformed SQS message as FAILED in Redis (if job_id is known),
+        then delete it from SQS so it doesn't block the queue.
+        """
+        if bad.job_id and self.config.redis.host:
+            key = f"{self.config.redis.job_key_prefix}:{bad.job_id}"
+            try:
+                self.redis.hset(key, mapping={"status": "FAILED", "workerType": "NSJAIL_WORKER"})
+                logger.info("[%s] Malformed message — marked job as FAILED", bad.job_id)
+            except Exception as e:
+                logger.error("[%s] Failed to mark malformed job as FAILED in Redis: %s", bad.job_id, e)
+        else:
+            logger.warning(
+                "Malformed SQS message with no extractable job_id — cannot update Redis (reason: %s)",
+                bad.reason,
+            )
+
+        self.poller.delete(bad.receipt_handle, bad.job_id or "")
+
+    def publish_to_redis(self, report: ExecutionReport) -> None:
+        """
+        Update the job's Redis hash with the execution outcome.
+
+        The backend creates this hash when the request is received and sets
+        status=QUEUED. The worker updates it to either COMPLETED or FAILED.
+
+        COMPLETED: execution finished (any valid outcome — accepted, wrong answer,
+                   TLE, compile error, etc.). Includes the full execution report.
+        FAILED:    worker-level failure (nsjail broken, disk full, etc.).
+                   No report added — the job cannot be retried meaningfully.
+
+        Raises RuntimeError after 3 failed attempts so the dispatcher skips
+        SQS deletion and the message is redelivered, keeping status=QUEUED.
+        """
+        if not self.config.redis.host:
+            logger.debug("[%s] Redis not configured — skipping publish", report.execution_id)
+            return
+
+        key = f"{self.config.redis.job_key_prefix}:{report.execution_id}"
+
+        is_worker_failure = report.status_code in (
+            StatusCode.INTERNAL_ERROR,
+            StatusCode.UNSUPPORTED_LANGUAGE,
+        )
+
+        if is_worker_failure:
+            mapping = {"status": "FAILED", "workerType": "NSJAIL_WORKER"}
+            logger.info("[%s] Marking job as FAILED (status_code=%s)", report.execution_id, report.status_code)
+        else:
+            mapping = {
+                "status": "COMPLETED",
+                "workerType": "NSJAIL_WORKER",
+                "executionReport": report.to_json(),
+            }
+            logger.info("[%s] Marking job as COMPLETED (status_code=%s)", report.execution_id, report.status_code)
+
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self.redis.hset(key, mapping=mapping)
+                self.redis.expire(key, self.config.redis.report_ttl)
+                return
+            except Exception as e:
+                logger.warning("[%s] Redis publish attempt %d/%d failed: %s", report.execution_id, attempt, max_attempts, e)
+                if attempt < max_attempts:
+                    time.sleep(attempt)  # 1s, 2s
+
+        raise RuntimeError(f"[{report.execution_id}] Redis publish failed after {max_attempts} attempts — job stays QUEUED")

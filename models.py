@@ -1,37 +1,36 @@
 import json
 import base64
 import time
-from enum import IntEnum
+from enum import Enum
 from dataclasses import dataclass, field, asdict
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 
 
 # ---------------------------------------------------------------------------
 # Status codes — these match what your Java/Kotlin backend expects
 # ---------------------------------------------------------------------------
 
-class StatusCode(IntEnum):
-    """Numeric codes your backend uses to classify the outcome."""
-    ACCEPTED = 10               # All test cases passed
-    WRONG_ANSWER = 20           # Output didn't match expected
-    MEMORY_LIMIT_EXCEEDED = 30  # Sandbox killed for memory
-    TIME_LIMIT_EXCEEDED = 40    # Sandbox killed for timeout
-    OUTPUT_LIMIT_EXCEEDED = 50  # stdout was too large
-    COMPILE_ERROR = 60          # Compilation failed
-    RUNTIME_ERROR = 70          # Process exited with non-zero code
-    INTERNAL_ERROR = 80         # Something broke on our side
-    UNSUPPORTED_LANGUAGE = 90   # Language not in allowed list
+class StatusCode(str, Enum):
+    """String codes your backend uses to classify the outcome."""
+    ACCEPTED = "ACC"
+    WRONG_ANSWER = "WA"
+    TIME_LIMIT_EXCEEDED = "TLE"
+    MEMORY_LIMIT_EXCEEDED = "MLE"
+    OUTPUT_LIMIT_EXCEEDED = "OLE"
+    COMPILE_ERROR = "CE"
+    RUNTIME_ERROR = "RE"
+    INTERNAL_ERROR = "IE"
+    UNSUPPORTED_LANGUAGE = "UL"
 
-
-class TestStatus(IntEnum):
+class TestStatus(str, Enum):
     """Per-test-case status."""
-    PASSED = 1
-    FAILED = 2
-    TIMEOUT = 3
-    MEMORY_EXCEED = 4
-    RUNTIME_ERROR = 5
-    OUTPUT_LIMIT = 6
-    ERROR = 7
+    PASSED = "PASSED"
+    FAILED = "FAILED"
+    TIMEOUT = "TIMEOUT"
+    MEMORY_EXCEED = "MEMORY_EXCEED"
+    OUTPUT_LIMIT = "OUTPUT_LIMIT"
+    RUNTIME_ERROR = "RUNTIME_ERROR"
+    ERROR = "ERROR"
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +64,21 @@ class ExecutionRequest:
 
 
 # ---------------------------------------------------------------------------
+# Malformed SQS message — could not be parsed into an ExecutionRequest
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MalformedMessage:
+    """
+    Represents an SQS message that failed to parse.
+    job_id may be None if the message was so broken we couldn't extract it.
+    """
+    receipt_handle: str
+    job_id: Optional[str] = None
+    reason: str = ""
+
+
+# ---------------------------------------------------------------------------
 # Results — what we produce
 # ---------------------------------------------------------------------------
 
@@ -95,8 +109,10 @@ class ExecutionReport:
     status_msg: str                        # Human-readable status
     total_testcases: int = 0
     total_correct: int = 0
+    runtime_ms: int = 0               # Slowest test case — reflects worst-case performance
+    memory_mb: int = 0               # Peak memory across all test cases
     test_results: Optional[List[TestCaseResult]] = None  # Present only for RUN_CODE task
-    failed_tescase: Optional[Dict[str, str]] = None    # Present only for SUBMIT_CODE task 
+    failed_testcase: Optional[Dict[str, str]] = None    # Present only for SUBMIT_CODE task
     compile_error: Optional[str] = None    # Present only if compilation failed
     runtime_error: Optional[str] = None    # Present only if runtime error
     internal_error: Optional[str] = None   # Present only if we had a bug

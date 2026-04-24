@@ -82,8 +82,11 @@ class JavaLanguage(BaseLanguage):
         # -Xms8m  : start with 8 MB heap (don't reserve 256 MB upfront)
         # -Xmx32m : cap heap at 32 MB (fits within the 50 MB cgroup limit)
         # -cp /code : look for .class files in /code
+        java_path = os.environ.get(
+            "JAVA_PATH", "/usr/lib/jvm/java-11-openjdk-amd64/bin/java"
+        )
         return [
-            "/usr/lib/jvm/java-11-openjdk-amd64/bin/java",
+            java_path,
             "-Xms8m", "-Xmx32m",
             "-XX:MaxMetaspaceSize=64m",
             "-cp", "/code",

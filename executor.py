@@ -11,12 +11,9 @@ Flow:
     7. Cleanup temp directory
 """
 import os
-import json
 import shutil
 import logging
 from typing import List
-
-import redis as redis_client
 
 from config import WorkerConfig
 from models import (
@@ -38,11 +35,6 @@ class Executor:
     def __init__(self, config: WorkerConfig):
         self.config = config
         self.sandbox = NsjailSandbox(config.sandbox)
-        self.redis = redis_client.Redis(
-            host=config.redis.host,
-            port=config.redis.port,
-            decode_responses=True,
-        )
 
     async def execute(self, request: ExecutionRequest) -> ExecutionReport:
         """
@@ -67,9 +59,9 @@ class Executor:
         # ---- Step 1: Create temp directory ----
         exec_dir = os.path.join(self.config.execution.temp_dir, f"exec_{job_id}")
         code_dir = os.path.join(exec_dir, "code")
-        os.makedirs(code_dir, exist_ok=True)
 
         try:
+            os.makedirs(code_dir, exist_ok=True)
             # ---- Step 2: Write code files ----
             logger.info("[%s] Writing code files", job_id)
             lang.write_files(code_dir, request.user_code, request.driver_code)
@@ -81,14 +73,13 @@ class Executor:
             )
 
             if not compile_result.success:
-                logger.info("[%s] Compilation failed", job_id)
+                logger.info("[%s] Compilation failed:\n%s", job_id, compile_result.error_message)
                 report = self._error_report(
                     request,
                     StatusCode.COMPILE_ERROR,
                     "Compilation error",
                 )
                 report.compile_error = compile_result.error_message
-                self._publish_to_redis(report)
                 return report
 
             # ---- Step 4: Clamp resource limits ----
@@ -115,7 +106,6 @@ class Executor:
 
             # ---- Step 6: Build report ----
             report = self._build_report(request, test_results)
-            self._publish_to_redis(report)
 
             logger.info(
                 "[%s] Execution complete: status=%s, passed=%d/%d",
@@ -131,7 +121,6 @@ class Executor:
                 "Internal execution error",
             )
             report.internal_error = str(e)
-            self._publish_to_redis(report)
             return report
 
         finally:
@@ -236,8 +225,12 @@ class Executor:
         if sandbox_result.exit_code != 0:
             stderr = sandbox_result.stderr.strip() if sandbox_result.stderr else ""
 
-            # nsjail failed to launch the child process — not a user code error
+            # nsjail failed to launch iteself/nsjail failed to launch the child process
             if sandbox_result.exit_code in (-1, 255):
+                logger.error(
+                    "Sandbox failed to execute (exit_code=%d) stderr=%r nsjail_log=%r",
+                    sandbox_result.exit_code, stderr, sandbox_result.nsjail_log,
+                )
                 return TestCaseResult(
                     index=index,
                     status=TestStatus.ERROR,
@@ -335,7 +328,6 @@ class Executor:
             return (StatusCode.OUTPUT_LIMIT_EXCEEDED, "Output Limit Exceeded", None, None)
         else:
             return (StatusCode.WRONG_ANSWER, "Wrong Answer", None, None)
-
     def _build_report(
         self,
         request: ExecutionRequest,
@@ -359,10 +351,11 @@ class Executor:
         first_failure = None
 
         if total == 0:
+            logger.error("[%s] No test cases in request", request.job_id)
             status_code = StatusCode.INTERNAL_ERROR
             status_msg = "No test cases"
         elif passed == total:
-            status_code = StatusCode.ACCEPTED
+            status_code = StatusCode.ACCEPTED   
             status_msg = "Accepted"
         elif is_submmit_code:
             # Stopped at first failure — use that to determine status
@@ -385,6 +378,9 @@ class Executor:
             )
             status_code, status_msg, runtime_error, internal_error = self._resolve_status(dominant)
 
+        max_runtime_ms = max((r.runtime_ms for r in test_results), default=0)
+        max_memory_mb = max((r.memory_mb for r in test_results), default=0)
+
         return ExecutionReport(
             execution_id=request.job_id,
             language=request.language,
@@ -395,7 +391,9 @@ class Executor:
             internal_error=internal_error,
             total_testcases=total,
             total_correct=passed,
-            failed_tescase=first_failure if is_submmit_code else None,
+            runtime_ms=max_runtime_ms,
+            memory_mb=max_memory_mb,
+            failed_testcase=first_failure if is_submmit_code else None,
             test_results=test_results if not is_submmit_code else None
         )
 
@@ -414,22 +412,4 @@ class Executor:
             status_msg=status_msg,
         )
 
-    def _publish_to_redis(self, report: ExecutionReport) -> None:
-        """
-        Publish the execution report to ElastiCache Redis so the backend
-        can serve it to the frontend via short polling.
-
-        Key:   report:<job_id>
-        Value: JSON string of the report
-        TTL:   report_ttl seconds (default 5 min) — auto-expires after
-               the frontend has had plenty of time to poll and retrieve it.
-        """
-        if self.redis is None:
-            logger.debug("[%s] Redis not configured — skipping publish", report.execution_id)
-            return
-        try:
-            key = f"report:{report.execution_id}"
-            self.redis.setex(key, self.config.redis.report_ttl, report.to_json())
-            logger.info("[%s] Report published to Redis (TTL=%ds)", report.execution_id, self.config.redis.report_ttl)
-        except Exception as e:
-            logger.error("[%s] Failed to publish report to Redis: %s", report.execution_id, e)
+    

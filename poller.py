@@ -6,13 +6,14 @@ for messages to arrive before returning empty. This avoids hammering
 SQS in a tight loop when the queue is empty, while still responding
 quickly when messages arrive.
 """
+import json
 import logging
-from typing import List
+from typing import List, Tuple
 
 import boto3
 
 from config import SQSConfig
-from models import ExecutionRequest, parse_sqs_message
+from models import ExecutionRequest, MalformedMessage, parse_sqs_message
 
 logger = logging.getLogger(__name__)
 
@@ -34,17 +35,16 @@ class SQSPoller:
             region_name=config.region,
         )
 
-    def poll(self) -> List[ExecutionRequest]:
+    def poll(self) -> Tuple[List[ExecutionRequest], List[MalformedMessage]]:
         """
         Receive up to max_messages_per_poll messages from SQS.
 
-        Returns a list of ExecutionRequest objects (could be empty if
-        no messages are available).
+        Returns a tuple of (valid_requests, malformed_messages).
 
-        SQS long polling means this call blocks for up to poll_wait_time
-        seconds if the queue is empty. This is NOT busy-waiting — the
-        connection is held open at the AWS side and only returns when
-        messages arrive or the wait time expires.
+        Malformed messages are returned (not silently deleted) so the
+        dispatcher can mark the job as FAILED in Redis before deleting.
+        If a job_id can be extracted from the partial JSON it is included
+        so Redis can be updated; otherwise job_id is None.
         """
         try:
             response = self.client.receive_message(
@@ -56,31 +56,45 @@ class SQSPoller:
 
             messages = response.get("Messages", [])
             if not messages:
-                return []
+                return [], []
 
             logger.info("Received %d message(s) from SQS", len(messages))
 
-            requests = []
+            requests: List[ExecutionRequest] = []
+            malformed: List[MalformedMessage] = []
+
             for msg in messages:
+                receipt_handle = msg["ReceiptHandle"]
                 try:
                     request = parse_sqs_message(
                         body=msg["Body"],
-                        receipt_handle=msg["ReceiptHandle"],
+                        receipt_handle=receipt_handle,
                     )
                     requests.append(request)
                 except (KeyError, ValueError) as e:
-                    # Malformed message — log and delete it so it doesn't block the queue
+                    job_id = self._try_extract_job_id(msg.get("Body", ""))
                     logger.error(
-                        "Failed to parse SQS message (deleting): %s — %s",
-                        msg.get("MessageId", "unknown"), e,
+                        "Malformed SQS message (MessageId=%s, job_id=%s): %s",
+                        msg.get("MessageId", "unknown"), job_id or "unknown", e,
                     )
-                    self.delete(msg["ReceiptHandle"])
+                    malformed.append(MalformedMessage(
+                        receipt_handle=receipt_handle,
+                        job_id=job_id,
+                        reason=str(e),
+                    ))
 
-            return requests
+            return requests, malformed
 
         except Exception as e:
             logger.error("SQS polling failed: %s", e)
             raise
+
+    def _try_extract_job_id(self, body: str) -> str | None:
+        """Best-effort extraction of jobId from a potentially malformed message body."""
+        try:
+            return json.loads(body).get("jobId")
+        except Exception:
+            return None
 
     def delete(self, receipt_handle: str, job_id: str = "") -> None:
         """

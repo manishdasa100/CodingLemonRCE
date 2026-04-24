@@ -217,6 +217,21 @@ class NsjailSandbox:
                 signal=None,
             )
 
+        except (FileNotFoundError, PermissionError, OSError) as e:
+            # nsjail binary missing, not executable, or OS refused to launch it
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            logger.error("Failed to launch nsjail: %s", e)
+            return SandboxResult(
+                stdout="",
+                stderr=f"Failed to launch sandbox: {e}",
+                nsjail_log="",
+                exit_code=-1,
+                timed_out=False,
+                oom_killed=False,
+                runtime_ms=elapsed_ms,
+                signal=None,
+            )
+
         finally:
             try:
                 os.unlink(log_path)

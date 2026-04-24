@@ -20,6 +20,7 @@ class SandboxConfig:
     """Settings for nsjail sandbox execution."""
     nsjail_path: str = ""
     config_path: str = ""                 # Path to sandbox_minimal.cfg
+    java_path: str = "/usr/lib/jvm/java-11-openjdk-amd64/bin/java"
     
 @dataclass
 class ExecutionConfig:
@@ -40,6 +41,7 @@ class RedisConfig:
     host: str = ""
     port: int = 6379
     report_ttl: int = 300    # Seconds to keep report in Redis (5 min is plenty for polling)
+    job_key_prefix: str = "submission:report"  # Must match the key prefix used by the backend
 
 
 @dataclass
@@ -100,6 +102,9 @@ def load_config(env_file: str) -> WorkerConfig:
     config.sandbox.config_path = os.environ.get(
         "NSJAIL_CONFIG_PATH", config.sandbox.config_path
     )
+    config.sandbox.java_path = os.environ.get(
+        "JAVA_PATH", config.sandbox.java_path
+    )
 
     # --- Execution ---
     config.execution.default_time_limit = int(
@@ -134,6 +139,7 @@ def load_config(env_file: str) -> WorkerConfig:
     config.redis.host = os.environ.get("REDIS_HOST", config.redis.host)
     config.redis.port = int(os.environ.get("REDIS_PORT", config.redis.port))
     config.redis.report_ttl = int(os.environ.get("REDIS_REPORT_TTL", config.redis.report_ttl))
+    config.redis.job_key_prefix = os.environ.get("REDIS_JOB_KEY_PREFIX", config.redis.job_key_prefix)
 
     # --- Worker ---
     config.max_consecutive_errors = int(
